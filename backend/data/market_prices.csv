@@ -1,0 +1,6 @@
+# Outside market prices for the buy-timing signal. One row per date and oil family, ex-GST rupees per kg.
+# family must match the dashboard's oil families: Groundnut, Sunflower, Rice bran, Vegetable (blended)
+date,family,price_per_kg,source
+2026-11-13,Groundnut,182.5,SEA daily quote - groundnut oil
+2026-11-13,Sunflower,161.0,SEA daily quote - refined sunflower oil
+2026-11-13,Rice bran,142.5,SEA daily quote - refined rice bran oil (Punjab)
