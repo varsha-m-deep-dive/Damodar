@@ -24,7 +24,7 @@ def _env(name, default=None, cast=str):
 # ---------------------------------------------------------------- database
 PG = {
     "host": _env("PGHOST"),
-    "dbname": _env("PGDATABASE", "easyreport"),
+    "dbname": _env("PGDATABASE"),
     "user": _env("PGUSER"),
     "password": _env("PGPASSWORD"),
     "sslmode": _env("PGSSLMODE", "require"),
@@ -32,6 +32,41 @@ PG = {
 }
 PG_SCHEMA = _env("PGSCHEMA", "public")          # schema that holds the views
 CACHE_TTL_SECONDS = _env("CACHE_TTL_SECONDS", 900, int)
+
+# Delta refresh: after the first full load, history tables re-read only recent rows.
+DELTA_ENABLED = _env("DELTA_ENABLED", "1") not in ("0", "false", "False", "no")
+DELTA_OVERLAP_DAYS = _env("DELTA_OVERLAP_DAYS", 45, int)        # recent days re-read every refresh
+DELTA_FULL_RELOAD_HOURS = _env("DELTA_FULL_RELOAD_HOURS", 24, float)  # full reload at least this often
+
+# ---------------------------------------------------------------- authentication
+AUTH_SECRET = _env("AUTH_SECRET")                 # long random string; signs login tokens
+AUTH_REQUIRED = _env("AUTH_REQUIRED", "1") not in ("0", "false", "False", "no")
+SESSION_HOURS = _env("SESSION_HOURS", 12, float)
+RESET_TOKEN_MINUTES = _env("RESET_TOKEN_MINUTES", 60, int)
+ADMIN_EMAIL = _env("ADMIN_EMAIL")                 # first admin, created if the users sheet is empty
+ADMIN_PASSWORD = _env("ADMIN_PASSWORD")
+FRONTEND_URL = (_env("FRONTEND_URL", "http://localhost:5173") or "").rstrip("/")  # for links in emails
+ALLOWED_ORIGINS = [o.strip().rstrip("/") for o in (_env("ALLOWED_ORIGINS", "*") or "*").split(",") if o.strip()]
+
+# ---------------------------------------------------------------- Google Sheets
+# Service-account key: the whole JSON (GOOGLE_SERVICE_ACCOUNT_JSON) or a path to the file
+# (GOOGLE_SERVICE_ACCOUNT_FILE). Share each spreadsheet with the service account's email.
+GOOGLE_SERVICE_ACCOUNT_JSON = _env("GOOGLE_SERVICE_ACCOUNT_JSON")
+GOOGLE_SERVICE_ACCOUNT_FILE = _env("GOOGLE_SERVICE_ACCOUNT_FILE")
+USERS_SHEET_ID = _env("USERS_SHEET_ID")           # private spreadsheet holding login accounts
+KPI_SHEET_ID = _env("KPI_SHEET_ID")               # spreadsheet that receives the KPI export
+SHEETS_EXPORT_INTERVAL_MINUTES = _env("SHEETS_EXPORT_INTERVAL_MINUTES", 0, int)  # 0 = only on demand
+
+# ---------------------------------------------------------------- email (password reset)
+# EMAIL_PROVIDER: "smtp" (Gmail with an App Password) or "resend" (HTTPS API; use this if
+# the host blocks SMTP ports). If neither is configured, admins can copy reset links instead.
+EMAIL_PROVIDER = (_env("EMAIL_PROVIDER", "smtp") or "smtp").lower()
+SMTP_HOST = _env("SMTP_HOST", "smtp.gmail.com")
+SMTP_PORT = _env("SMTP_PORT", 465, int)
+SMTP_USER = _env("SMTP_USER")
+SMTP_PASSWORD = _env("SMTP_PASSWORD")
+EMAIL_FROM = _env("EMAIL_FROM") or SMTP_USER
+RESEND_API_KEY = _env("RESEND_API_KEY")
 
 # Offline demo: point at the Excel extract (Latest_views_*.xlsx) to run without a DB
 DEMO_EXCEL = _env("DEMO_EXCEL")

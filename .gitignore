@@ -5,3 +5,6 @@ backend/.venv/
 *.cache.pkl
 frontend/node_modules/
 frontend/dist/
+
+backend/data/users.local.json
+*service-account*.json

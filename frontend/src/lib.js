@@ -8,17 +8,47 @@ export function apiUrl(path, params = {}) {
   return `${API_BASE}/api${path}${qs.toString() ? '?' + qs : ''}`
 }
 
+// ------------------------------------------------------------------ session
+const TOKEN_KEY = 'dkpi_token'
+let token = null
+try { token = localStorage.getItem(TOKEN_KEY) } catch (e) { /* storage blocked */ }
+
+export const getToken = () => token
+export function setToken(t) {
+  token = t || null
+  try { t ? localStorage.setItem(TOKEN_KEY, t) : localStorage.removeItem(TOKEN_KEY) } catch (e) { /* ignore */ }
+}
+/** Called when the API says the session is no longer valid. */
+function sessionExpired() {
+  setToken(null)
+  cache.clear()
+  window.dispatchEvent(new Event('auth:expired'))
+}
+
+async function request(url, opts = {}) {
+  const headers = { ...(opts.headers || {}) }
+  if (token) headers.Authorization = `Bearer ${token}`
+  const r = await fetch(url, { ...opts, headers })
+  const body = await r.json().catch(() => ({ error: `HTTP ${r.status}` }))
+  if (r.status === 401 && body.auth) sessionExpired()
+  if (!r.ok || body.error) throw new Error(body.error || `HTTP ${r.status}`)
+  return body
+}
+
 export async function fetchApi(path, params) {
   const url = apiUrl(path, params)
   if (cache.has(url)) return cache.get(url)
-  const p = fetch(url).then(async (r) => {
-    const body = await r.json().catch(() => ({ error: `HTTP ${r.status}` }))
-    if (!r.ok || body.error) throw new Error(body.error || `HTTP ${r.status}`)
-    return body
-  })
+  const p = request(url)
   cache.set(url, p)
   p.catch(() => cache.delete(url))
   return p
+}
+
+/** POST JSON (never cached). */
+export function postApi(path, data = {}) {
+  return request(apiUrl(path), {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data),
+  })
 }
 
 export function clearClientCache() { cache.clear() }

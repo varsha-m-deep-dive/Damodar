@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 
 from . import config, sql, sku
-from .db import cached, query_df
+from .db import cached, delta_query, query_df
 
 NULL_TOKENS = {"[NULL]", "NULL", "None", "nan", "NaN", ""}
 
@@ -143,7 +143,7 @@ def sales() -> pd.DataFrame:
         else:
             q = sql.SALES.format(route=_dim(config.DIM_ROUTE), city=_dim(config.DIM_CITY),
                                  agent=_dim(config.DIM_AGENT), zone=_dim(config.DIM_ZONE))
-            df = query_df(q, _params(start=history_start(), discount_ledgers=list(config.DISCOUNT_LEDGERS)))
+            df = delta_query("sales", q, _params(start=history_start(), discount_ledgers=list(config.DISCOUNT_LEDGERS)), "date")
         df = clean_frame(df, date_cols=["date"], num_cols=["quantity", "altquantity", "amount"])
         df = df[df.companyname.str.contains(config.COMPANY_INCLUDE_REGEX, regex=True, na=False)]
         df = dedupe_companies(df)
@@ -205,7 +205,7 @@ def billwise() -> pd.DataFrame:
         if config.DEMO_EXCEL:
             df = _demo_billwise()
         else:
-            df = query_df(sql.BILLWISE, _params(start=history_start()))
+            df = delta_query("billwise", sql.BILLWISE, _params(start=history_start()), "voucherdate")
         df = clean_frame(df, date_cols=["voucherdate", "billdate", "duedate"], num_cols=["billlineamount"])
         df["billname"] = df.billname.astype(str)
         df = fix_due_dates(df)
@@ -295,7 +295,7 @@ def purchases() -> pd.DataFrame:
             df = df[df.vouchertype.isin(["Purchase", "Debit Note"]) & ~df.ispartyledger.astype(bool)
                     & df.ledgergroupl1.eq("Purchase Accounts")]
         else:
-            df = query_df(sql.PURCHASES, _params(start=history_start()))
+            df = delta_query("purchases", sql.PURCHASES, _params(start=history_start()), "date")
         df = clean_frame(df, date_cols=["date"], num_cols=["quantity", "amount"])
         df = dedupe_companies(df)
         # Purchase lines are debits (negative in Tally): make value and quantity positive
@@ -317,7 +317,7 @@ def orders() -> pd.DataFrame:
             df = df[df.vouchertype.eq("Sales Order") |
                     (df.vouchertype.eq("Sales") & ~bl.isin(["", "Not Applicable", "[NULL]"]))]
         else:
-            df = query_df(sql.ORDERS, _params(start=history_start(1)))
+            df = delta_query("orders", sql.ORDERS, _params(start=history_start(1)), "date")
         df = clean_frame(df, date_cols=["date", "orderduedate", "preclosuredate"], num_cols=["quantity", "amount"])
         df = dedupe_companies(df)
         df["qty"] = df.quantity.abs()
@@ -332,7 +332,7 @@ def production() -> pd.DataFrame:
         if config.DEMO_EXCEL:
             df = _demo_sheet("Production")
         else:
-            df = query_df(sql.PRODUCTION, _params(start=history_start(2)))
+            df = delta_query("production", sql.PRODUCTION, _params(start=history_start(2)), "date")
         df = clean_frame(df, date_cols=["date"], num_cols=["quantity"])
         df = dedupe_companies(df)
         df["quantity"] = df.quantity.abs()
@@ -373,7 +373,7 @@ def voucher_headers() -> pd.DataFrame:
                     "vouchertypename", "voucherno", "enteredby", "partyledgername"]
             df = df[[c for c in cols if c in df]].drop_duplicates("voucherid")
         else:
-            df = query_df(sql.VOUCHER_HEADERS, _params(start=history_start(1)))
+            df = delta_query("voucher_headers", sql.VOUCHER_HEADERS, _params(start=history_start(1)), "date")
         df = clean_frame(df, date_cols=["date"])
         df["vouchermasterid"] = pd.to_numeric(df.vouchermasterid, errors="coerce")
         return df

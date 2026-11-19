@@ -1,6 +1,8 @@
 # Damodara Oil Mill – KPI Dashboard
 
-A React dashboard with a Python (FastAPI) backend that implements the 38 items on the KPI sheet. It reads the existing views in the **easyreport** Neon database and never writes to the database.
+A React dashboard with a Python (FastAPI) backend that implements the 38 items on the KPI sheet. It reads the existing views in the Tally Neon database and never writes to it. Sign-in is required; accounts live in a private Google Sheet, and every KPI can be exported to another Google Sheet.
+
+**Live setup:** dashboard on **Vercel**, API on **DigitalOcean App Platform**, data in **Neon** (sections 5–10).
 
 ```
 damodara-dashboard/
@@ -11,8 +13,13 @@ damodara-dashboard/
 │   │   ├── loaders.py      loads + cleans data; company de-duplication; demo mode
 │   │   ├── sku.py          pack size, oil family, kg per unit from item names
 │   │   ├── kpi/            sales, customers, forecast, receivables, payables, cash, margin, production, control
-│   │   ├── api.py          list of all /api routes
-│   │   └── main.py         FastAPI app (also serves the built frontend)
+│   │   ├── api.py          list of all /api KPI routes
+│   │   ├── auth.py         sign-in, sessions, password reset, user admin
+│   │   ├── emailer.py      reset / invite emails (Gmail SMTP or Resend)
+│   │   ├── gsheets.py      Google service-account client
+│   │   ├── sheets_export.py  KPI export to Google Sheets (+ schedule)
+│   │   ├── db.py           queries, cache, delta refresh
+│   │   └── main.py         FastAPI app: sign-in check, routes, serves the built frontend
 │   ├── data/festivals.json, market_prices.csv
 │   ├── tests/test_core.py
 │   ├── requirements.txt, .env.example
@@ -68,7 +75,9 @@ copy .env.example .env            # Mac/Linux: cp .env.example .env
 uvicorn app.main:app --reload --port 8000
 ```
 
-Check it: <http://localhost:8000/api/health> should show `"source": "postgres"` and the database name `easyreport`. <http://localhost:8000/docs> lists every endpoint.
+Check it: <http://localhost:8000/api/health> should show `"source": "postgres"` and the database name.
+
+**Sign-in locally:** put `ADMIN_EMAIL`, `ADMIN_PASSWORD` and `AUTH_SECRET` in `.env`; the admin account is created at the first start (stored in `backend/data/users.local.json` when `USERS_SHEET_ID` is empty). Or set `AUTH_REQUIRED=0` to skip sign-in on your own machine. Never use `AUTH_REQUIRED=0` on a server. <http://localhost:8000/docs> lists every endpoint.
 
 **Frontend (development)**
 
@@ -146,18 +155,93 @@ npm run dev                       # opens http://localhost:5173, /api is proxied
 - **Credit limits** are not set in Tally for most customers; the dashboard suggests them.
 - **Agent** data is empty (`costcentreclass`).
 
-## 5. Security
+## 5. Sign-in, password reset, users
 
-The database password was shared in a chat. Keep it only in `backend/.env` (already in `.gitignore`), and consider resetting it in the Neon console. The API is read-only; put it behind your network or a login before exposing it outside the office.
+- Everyone signs in with email + password. Sessions last `SESSION_HOURS` (12 h); after that the dashboard asks again.
+- **Roles:** *viewer* sees all KPI pages; *admin* also gets **Users & Sheets** (add/disable users, reset links, Google Sheets export) and **Full reload**.
+- **First admin:** set `ADMIN_EMAIL` + `ADMIN_PASSWORD` on the server. It is created at start-up only if no admin exists, so you can remove `ADMIN_PASSWORD` after the first sign-in.
+- **Adding a user:** Users & Sheets → Add user. They are emailed a link (valid 7 days) to choose a password. If email is not set up, the page shows the link to copy and send on WhatsApp etc.
+- **Forgot password:** "Forgot password?" on the sign-in page emails a link valid for 60 minutes (`RESET_TOKEN_MINUTES`). Links work once. The page answers the same whether or not the email exists, so it cannot be used to find accounts. Admins can also create a reset link for anyone.
+- **Change password:** My account → Change password. Changing or resetting a password signs that user out everywhere else.
+- **Security details:** passwords are stored only as scrypt hashes; tokens are signed with `AUTH_SECRET` (HMAC-SHA256); 8 failed sign-ins in 15 minutes locks that email/IP for 15 minutes; `ALLOWED_ORIGINS` limits which website may call the API. Disabling a user takes effect within 30 seconds.
+- The database password was shared in a chat earlier: consider resetting it in the Neon console, then update `PGPASSWORD` in `backend/.env` and on DigitalOcean.
 
-## 6. Deployment
+## 6. Delta refresh
 
-**DigitalOcean App Platform (full app: API + dashboard)**: uses the root `Dockerfile` and `.do/app.yaml`.
-Create App → GitHub → `varsha-m-deep-dive/Damodar` (branch `main`), or `doctl apps create --spec .do/app.yaml`.
-In the app's Settings → Environment Variables, set `PGPASSWORD` as an *encrypted* value. Check `https://<app>.ondigitalocean.app/api/health`.
+The first load reads up to 5 years of history (~180,000 sales lines, about 40 s). After that, each refresh reads only entries dated within the last **45 days** (`DELTA_OVERLAP_DAYS`) and swaps them in. Measured on the live data: **2,422 rows instead of 177,222; 5.7 s instead of 19 s** for sales.
 
-**Vercel (dashboard only)**: New Project → import the repo → **Root Directory: `frontend`** (Vite is detected from `frontend/vercel.json`).
-Add environment variable `VITE_API_BASE=https://<app>.ondigitalocean.app` (no trailing slash), then deploy. The browser calls the DigitalOcean API directly (CORS is open for GET).
-The Python backend is not run on Vercel: pandas/scikit-learn exceed Vercel's function size limit and the in-memory cache needs a long-running server.
+- Refresh happens automatically when the 15-minute cache expires, or with **Refresh data** in the sidebar. The sidebar shows how many lines the last refresh read.
+- Re-reading the last 45 days (not just "new" rows) picks up recent edits, cancellations and deletions.
+- An edit to an entry **older than 45 days** is picked up by the automatic full reload every 24 h (`DELTA_FULL_RELOAD_HOURS`), or immediately with **Full reload** (admins).
+- Applies to sales, bill-wise, purchases, orders, production and voucher headers. Balances (outstanding, payables, stock, BOM, masters) are small and always read in full.
+- A restart or new deployment starts with one full load again.
 
-Both URLs are public, and the API has no login. See section 5.
+## 7. Google Sheets
+
+Two spreadsheets, both shared with one Google **service account** (a robot Google account for the server):
+
+| Spreadsheet | Env var | Contents | Who should see it |
+|---|---|---|---|
+| Users | `USERS_SHEET_ID` | tab `users`: email, name, role, password hash, active, last sign-in, reset token hash | Only the owner/IT. Do not share widely. |
+| KPI export | `KPI_SHEET_ID` | `Index` tab + one tab per KPI endpoint (45 tabs: headline figures, then each table) | Managers |
+
+**Setup (once, ~10 minutes):**
+1. <https://console.cloud.google.com> → create a project (e.g. `damodara-dashboard`).
+2. APIs & Services → Library → enable **Google Sheets API**.
+3. IAM & Admin → Service Accounts → Create (name `dashboard`) → open it → Keys → Add key → JSON. A `.json` file downloads. Keep it private, never commit it.
+4. Create two Google Sheets (Users, KPI export). In each: Share → paste the service account email (`dashboard@<project>.iam.gserviceaccount.com`) → **Editor**.
+5. Copy each sheet's id from its URL: `https://docs.google.com/spreadsheets/d/<id>/edit`.
+6. On the server set `GOOGLE_SERVICE_ACCOUNT_JSON` (the whole file content on one line), `USERS_SHEET_ID`, `KPI_SHEET_ID`. Locally you can use `GOOGLE_SERVICE_ACCOUNT_FILE=C:/path/key.json` instead.
+
+The KPI export runs every `SHEETS_EXPORT_INTERVAL_MINUTES` (60 on DigitalOcean) and with **Export all KPIs now** on the Users & Sheets page. A full export is about 58,000 cells in 5 API calls and takes 1–3 minutes (mostly computing the KPIs). Values are written as plain values, so a customer name starting with `=` is never run as a formula.
+
+## 8. Password-reset email
+
+**Gmail (default):** on the Gmail account that will send the emails, turn on 2-Step Verification, then <https://myaccount.google.com/apppasswords> → create an App Password. Set `SMTP_USER=<that gmail>`, `SMTP_PASSWORD=<16-character app password>`, `EMAIL_PROVIDER=smtp`.
+
+DigitalOcean blocks outgoing SMTP ports (25/465/587) on Droplets, and it may do the same on App Platform. If reset emails fail with a timeout, switch to **Resend** (sends over HTTPS): create an account at resend.com, verify a domain you own, then set `EMAIL_PROVIDER=resend`, `RESEND_API_KEY=...`, `EMAIL_FROM=Dashboard <noreply@yourdomain.com>`. Without either, admins can still copy reset links from the Users page.
+
+## 9. Deployment
+
+```
+Browser ──► Vercel (React dashboard, static) ──► DigitalOcean App Platform (FastAPI, Docker) ──► Neon Postgres (Tally views)
+                                                          └──► Google Sheets API (users + KPI export), Gmail/Resend
+```
+
+Why the API is not on Vercel: pandas + numpy + scikit-learn are near or over Vercel's Python function size limit, a cold function would reload 5 years of data (~40 s) on every cold start, and the cache, delta refresh and hourly export need one long-running process. DigitalOcean also serves the full dashboard itself at its own URL, which is useful as a backup.
+
+### DigitalOcean (API), first
+Create App → GitHub → `varsha-m-deep-dive/Damodar`, branch `main` → Dockerfile detected → port **8080**, **1 container**, 1 GB RAM, region **BLR1**. Environment variables (all listed in [.do/app.yaml](.do/app.yaml); tick *Encrypt* for secrets):
+
+| Variable | Value |
+|---|---|
+| `PGHOST`, `PGDATABASE`, `PGUSER`, `PGPASSWORD`, `PGSSLMODE`, `PGCHANNELBINDING`, `PGSCHEMA` | as in `backend/.env` |
+| `AUTH_SECRET` | random, e.g. `python -c "import secrets; print(secrets.token_urlsafe(48))"` |
+| `ADMIN_EMAIL`, `ADMIN_PASSWORD` | first admin |
+| `FRONTEND_URL`, `ALLOWED_ORIGINS` | your Vercel URL, e.g. `https://damodar.vercel.app` (no trailing `/`) |
+| `GOOGLE_SERVICE_ACCOUNT_JSON`, `USERS_SHEET_ID`, `KPI_SHEET_ID`, `SHEETS_EXPORT_INTERVAL_MINUTES=60` | section 7 |
+| `EMAIL_PROVIDER`, `SMTP_USER`, `SMTP_PASSWORD` (or `RESEND_API_KEY`, `EMAIL_FROM`) | section 8 |
+
+Health check path: `/api/auth/config`. It does not query the database, so Neon can still sleep when nobody is using the dashboard.
+
+### Vercel (dashboard)
+Add New → Project → import `varsha-m-deep-dive/Damodar` → **Root Directory `frontend`** → Environment Variable `VITE_API_BASE=https://<your-app>.ondigitalocean.app` → Deploy. Then put the Vercel URL into `FRONTEND_URL` / `ALLOWED_ORIGINS` on DigitalOcean.
+
+Every push to `main` redeploys both automatically.
+
+## 10. Services and pricing
+
+Prices as checked in November 2026 (USD, before tax). Check the linked pages before committing; providers change prices.
+
+| Service | Used for | Plan we need | Cost | Free-tier / quota notes |
+|---|---|---|---|---|
+| [Vercel](https://vercel.com/pricing) | Hosting the dashboard (static React) | **Pro** (Hobby is for personal, non-commercial use only) | **$20 / member / month** | Pro includes 1 TB transfer/month; this static site uses a tiny fraction. Only people who deploy need seats, not dashboard viewers. |
+| [DigitalOcean App Platform](https://www.digitalocean.com/pricing/app-platform) | Running the FastAPI backend | Shared 1 vCPU / 1 GB, 1 container | **$12 / month** (`apps-s-1vcpu-1gb`) | 150 GB transfer included, then $0.02/GB. A $10/mo "fixed" variant exists without scaling. |
+| [Neon Postgres](https://neon.com/pricing) | Tally data (already in place, read-only) | Existing plan | Free tier, or Launch ≈ **$0.106 per compute-hour** + storage, no minimum | Free: 100 CU-hours/month per project. Hourly export + daytime use keep compute awake for some minutes each hour; watch usage in the Neon console. |
+| [Google Sheets API](https://developers.google.com/sheets/api/limits) | User store + KPI export | Google Cloud project + service account | **Free** | 300 reads & 300 writes/min per project, 60/min per user. One export ≈ 5 write calls. Google has said it plans charges for exceeding quota later in 2026; we stay far below it. |
+| Google Cloud service account | Server identity for Sheets | — | **Free** | No billing account needed at this volume. |
+| [Gmail SMTP](https://support.google.com/a/answer/166852) | Reset / invite emails | Existing Gmail or Workspace account + App Password | **Free** | ~500 emails/day (Gmail), 2,000/day (Workspace). |
+| [Resend](https://resend.com/pricing) (fallback) | Reset emails over HTTPS if SMTP is blocked | Free | **$0** | 3,000 emails/month, 100/day; needs a verified domain. |
+| GitHub | Code + auto-deploys | Free | **$0** | Private repos are free. |
+
+**Typical monthly total:** about **$32** (Vercel Pro $20 + DigitalOcean $12), plus Neon if you go beyond its free tier.

@@ -30,7 +30,7 @@ def meta(q):
     c = loaders.companies()
     return {"current_company": loaders.current_company(), "as_of": loaders.data_as_of(),
             "today": date.today(), "demo_mode": bool(config.DEMO_EXCEL),
-            "companies": c, "families": config.FORECAST_FAMILIES,
+            "companies": c, "families": config.FORECAST_FAMILIES, "refresh": db.refresh_log,
             "settings": {"kg_per_litre": config.KG_PER_LITRE, "route_field": config.DIM_ROUTE,
                          "city_field": config.DIM_CITY, "agent_field": config.DIM_AGENT, "zone_field": config.DIM_ZONE,
                          "history_years": config.HISTORY_YEARS, "company_filter": config.COMPANY_INCLUDE_REGEX}}
@@ -43,8 +43,9 @@ def health(q):
 
 
 def clear_cache(q):
-    db.clear_cache()
-    return {"ok": True}
+    full = str(q.get("full", "")).lower() in ("1", "true", "yes")
+    db.clear_cache(full=full)
+    return {"ok": True, "full": full}
 
 
 ROUTES = {
