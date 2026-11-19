@@ -59,12 +59,16 @@ def query_df(sql: str, params=None) -> pd.DataFrame:
 
 
 _key_load_locks = {}
+_warming = threading.local()
+warm_status = {"running": False, "last_done": None, "seconds": None, "error": None}
 
 
 def cached(key, fn, ttl=None):
     """Return fn() from cache if fresh. Concurrent requests for the same key wait for one load
     instead of each running the same query."""
     ttl = config.CACHE_TTL_SECONDS if ttl is None else ttl
+    if getattr(_warming, "on", False):  # background refresh renews entries before users see them expire
+        ttl = max(60, ttl - config.WARM_INTERVAL_SECONDS - 60)
     with _lock:
         hit = _cache.get(key)
         if hit and time.time() - hit[0] < ttl:
@@ -146,3 +150,29 @@ def delta_query(key: str, sql: str, params: dict, date_col: str) -> pd.DataFrame
 def ping():
     df = query_df("select current_database() as db, now() as server_time")
     return df.iloc[0].to_dict()
+
+
+def start_warmer(loaders_list):
+    """Load the data right after start-up and refresh it in the background, so dashboard
+    requests are answered from memory instead of waiting on the database (which can take
+    longer than the hosting platform's request timeout on the first load)."""
+    interval = config.WARM_INTERVAL_SECONDS
+    if interval <= 0:
+        return
+
+    def loop():
+        _warming.on = True
+        while True:
+            t0 = time.time()
+            warm_status.update(running=True, error=None)
+            for fn in loaders_list:
+                try:
+                    fn()
+                except Exception as e:  # keep going; the error shows on the page that needs it
+                    warm_status["error"] = f"{getattr(fn, '__name__', fn)}: {type(e).__name__}: {e}"
+                    print(f"background load failed: {warm_status['error']}")
+            warm_status.update(running=False, last_done=time.strftime("%Y-%m-%dT%H:%M:%S"),
+                               seconds=round(time.time() - t0, 1))
+            time.sleep(interval)
+
+    threading.Thread(target=loop, name="data-warmer", daemon=True).start()

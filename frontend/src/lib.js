@@ -25,10 +25,32 @@ function sessionExpired() {
   window.dispatchEvent(new Event('auth:expired'))
 }
 
+const RETRY_STATUS = new Set([502, 503, 504])
+const MAX_RETRIES = 8          // ~4 minutes: covers the first data load after a server restart
+const RETRY_WAIT_MS = 30000
+const wait = (ms) => new Promise((res) => setTimeout(res, ms))
+
 async function request(url, opts = {}) {
   const headers = { ...(opts.headers || {}) }
   if (token) headers.Authorization = `Bearer ${token}`
-  const r = await fetch(url, { ...opts, headers })
+  const isGet = !opts.method || opts.method === 'GET'
+  let r
+  for (let attempt = 0; ; attempt++) {
+    try {
+      r = await fetch(url, { ...opts, headers })
+    } catch (e) {  // network error / gateway closed the connection
+      if (!isGet || attempt >= MAX_RETRIES) throw e
+      await wait(RETRY_WAIT_MS)
+      continue
+    }
+    // The server keeps loading data after the platform's gateway gives up (504), so asking
+    // again shortly afterwards gets the answer from memory.
+    if (isGet && RETRY_STATUS.has(r.status) && attempt < MAX_RETRIES) {
+      await wait(RETRY_WAIT_MS)
+      continue
+    }
+    break
+  }
   const body = await r.json().catch(() => ({ error: `HTTP ${r.status}` }))
   if (r.status === 401 && body.auth) sessionExpired()
   if (!r.ok || body.error) throw new Error(body.error || `HTTP ${r.status}`)

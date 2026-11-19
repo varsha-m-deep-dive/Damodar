@@ -71,7 +71,8 @@ async def _run(fn, *args, **kw):
 @app.get("/api/auth/config")
 async def auth_config():
     from . import emailer
-    return {"auth_required": config.AUTH_REQUIRED, "email_enabled": emailer.enabled()}
+    from . import db
+    return {"auth_required": config.AUTH_REQUIRED, "email_enabled": emailer.enabled(), "data_loading": db.warm_status}
 
 
 @app.post("/api/auth/login")
@@ -165,6 +166,10 @@ async def _startup():
         except Exception as e:
             print(f"WARNING: user store not ready: {e}")
     sheets_export.start_scheduler()
+    from . import db, loaders
+    db.start_warmer([loaders.companies, loaders.sales, loaders.outstanding, loaders.payables,
+                     loaders.customer_master, loaders.billwise, loaders.purchases, loaders.production,
+                     loaders.bom, loaders.closing_stock, loaders.orders, loaders.voucher_headers])
 
 
 _dist = Path(__file__).resolve().parents[2] / "frontend" / "dist"

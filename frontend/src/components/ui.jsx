@@ -75,7 +75,17 @@ export function NumberInput({ label, value, onChange, step = 100000 }) {
 }
 
 export function Loading() {
-  return <div className="loading"><span className="spinner" /> Loading…</div>
+  const [slow, setSlow] = React.useState(false)
+  React.useEffect(() => {
+    const t = setTimeout(() => setSlow(true), 15000)
+    return () => clearTimeout(t)
+  }, [])
+  return (
+    <div className="loading">
+      <span className="spinner" /> Loading…
+      {slow && <span className="muted">The first load after a server restart reads 5 years of data and can take 2–4 minutes. It is fast after that.</span>}
+    </div>
+  )
 }
 
 export function ErrorBox({ error }) {
