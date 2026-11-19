@@ -1,0 +1,40 @@
+# DigitalOcean App Platform spec.
+# Create:  doctl apps create --spec .do/app.yaml
+# Or in the web console: Create App -> GitHub -> varsha-m-deep-dive/Damodar -> it detects the Dockerfile.
+# Set PGPASSWORD as an encrypted secret in the console (never commit it).
+name: damodara-dashboard
+region: blr
+services:
+  - name: web
+    github:
+      repo: varsha-m-deep-dive/Damodar
+      branch: main
+      deploy_on_push: true
+    dockerfile_path: Dockerfile
+    http_port: 8080
+    instance_count: 1
+    instance_size_slug: apps-s-1vcpu-1gb
+    health_check:
+      http_path: /api/health
+      initial_delay_seconds: 20
+      timeout_seconds: 30
+    envs:
+      - key: PGHOST
+        value: ep-morning-sound-aujg3fb5-pooler.c-10.us-east-1.aws.neon.tech
+      - key: PGDATABASE
+        value: easyreport
+      - key: PGUSER
+        value: neondb_owner
+      - key: PGPASSWORD
+        type: SECRET
+        value: CHANGE_ME_IN_CONSOLE
+      - key: PGSSLMODE
+        value: require
+      - key: PGCHANNELBINDING
+        value: require
+      - key: PGSCHEMA
+        value: public
+      - key: CACHE_TTL_SECONDS
+        value: "900"
+      - key: HISTORY_YEARS
+        value: "5"

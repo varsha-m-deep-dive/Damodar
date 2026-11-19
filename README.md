@@ -149,3 +149,15 @@ npm run dev                       # opens http://localhost:5173, /api is proxied
 ## 5. Security
 
 The database password was shared in a chat. Keep it only in `backend/.env` (already in `.gitignore`), and consider resetting it in the Neon console. The API is read-only; put it behind your network or a login before exposing it outside the office.
+
+## 6. Deployment
+
+**DigitalOcean App Platform (full app: API + dashboard)**: uses the root `Dockerfile` and `.do/app.yaml`.
+Create App → GitHub → `varsha-m-deep-dive/Damodar` (branch `main`), or `doctl apps create --spec .do/app.yaml`.
+In the app's Settings → Environment Variables, set `PGPASSWORD` as an *encrypted* value. Check `https://<app>.ondigitalocean.app/api/health`.
+
+**Vercel (dashboard only)**: New Project → import the repo → **Root Directory: `frontend`** (Vite is detected from `frontend/vercel.json`).
+Add environment variable `VITE_API_BASE=https://<app>.ondigitalocean.app` (no trailing slash), then deploy. The browser calls the DigitalOcean API directly (CORS is open for GET).
+The Python backend is not run on Vercel: pandas/scikit-learn exceed Vercel's function size limit and the in-memory cache needs a long-running server.
+
+Both URLs are public, and the API has no login. See section 5.
