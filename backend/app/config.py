@@ -32,6 +32,8 @@ PG = {
 }
 PG_SCHEMA = _env("PGSCHEMA", "public")          # schema that holds the views
 CACHE_TTL_SECONDS = _env("CACHE_TTL_SECONDS", 900, int)
+DB_MAX_CONCURRENT = _env("DB_MAX_CONCURRENT", 2, int)   # queries running at once
+DB_RETRIES = _env("DB_RETRIES", 2, int)                 # retries after a dropped connection
 
 # Delta refresh: after the first full load, history tables re-read only recent rows.
 DELTA_ENABLED = _env("DELTA_ENABLED", "1") not in ("0", "false", "False", "no")

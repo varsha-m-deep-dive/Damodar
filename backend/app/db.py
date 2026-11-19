@@ -19,10 +19,18 @@ def _connect():
         raise RuntimeError(f"Database settings missing: {', '.join('PG' + m.upper() for m in missing)}. "
                            "Copy backend/.env.example to backend/.env and fill it in.")
     kw.setdefault("connect_timeout", 20)
+    # keep long-running queries alive across networks that drop quiet connections
+    kw.update(keepalives=1, keepalives_idle=30, keepalives_interval=10, keepalives_count=5)
     return psycopg.connect(**kw)
 
 
-def query_df(sql: str, params=None) -> pd.DataFrame:
+# At most DB_MAX_CONCURRENT queries run at once. A page asks for many KPIs together; without
+# this, they all hit Neon in parallel and a small compute can drop connections
+# ("SSL connection has been closed unexpectedly").
+_db_slots = threading.BoundedSemaphore(max(1, config.DB_MAX_CONCURRENT))
+
+
+def _query_once(sql, params):
     with _connect() as conn, conn.cursor() as cur:
         if config.PG_SCHEMA and config.PG_SCHEMA != "public":
             # set inside the same transaction: Neon's pooler does not accept startup options
@@ -34,18 +42,44 @@ def query_df(sql: str, params=None) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=cols)
 
 
+def query_df(sql: str, params=None) -> pd.DataFrame:
+    """Run a read-only query. Dropped connections (Neon waking up, network blips) are retried."""
+    import psycopg
+    attempts = max(1, config.DB_RETRIES + 1)
+    with _db_slots:
+        for i in range(attempts):
+            try:
+                return _query_once(sql, params)
+            except psycopg.OperationalError as e:
+                if i == attempts - 1:
+                    raise
+                wait = 2 * (i + 1)
+                print(f"database connection failed ({e}); retrying in {wait}s")
+                time.sleep(wait)
+
+
+_key_load_locks = {}
+
+
 def cached(key, fn, ttl=None):
-    """Return fn() from cache if fresh."""
+    """Return fn() from cache if fresh. Concurrent requests for the same key wait for one load
+    instead of each running the same query."""
     ttl = config.CACHE_TTL_SECONDS if ttl is None else ttl
-    now = time.time()
     with _lock:
         hit = _cache.get(key)
-        if hit and now - hit[0] < ttl:
+        if hit and time.time() - hit[0] < ttl:
             return hit[1]
-    val = fn()
-    with _lock:
-        _cache[key] = (now, val)
-    return val
+        klock = _key_load_locks.setdefault(key, threading.Lock())
+    with klock:
+        with _lock:  # another request may have loaded it while we waited
+            hit = _cache.get(key)
+            if hit and time.time() - hit[0] < ttl:
+                return hit[1]
+        now = time.time()
+        val = fn()
+        with _lock:
+            _cache[key] = (now, val)
+        return val
 
 
 def clear_cache(full=False):
