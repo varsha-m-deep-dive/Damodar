@@ -48,7 +48,7 @@ SESSION_HOURS = _env("SESSION_HOURS", 12, float)
 RESET_TOKEN_MINUTES = _env("RESET_TOKEN_MINUTES", 60, int)
 ADMIN_EMAIL = _env("ADMIN_EMAIL")                 # first admin, created if the users sheet is empty
 ADMIN_PASSWORD = _env("ADMIN_PASSWORD")
-FRONTEND_URL = (_env("FRONTEND_URL", "http://localhost:5173") or "").rstrip("/")  # for links in emails
+FRONTEND_URL = (_env("FRONTEND_URL", "") or "").rstrip("/")  # dashboard address for reset links; blank = the site the request came from
 ALLOWED_ORIGINS = [o.strip().rstrip("/") for o in (_env("ALLOWED_ORIGINS", "*") or "*").split(",") if o.strip()]
 
 # ---------------------------------------------------------------- Google Sheets

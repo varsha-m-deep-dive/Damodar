@@ -320,20 +320,21 @@ def change_password(email, current, new):
     return {"token": make_token(u), "user": public(u)}
 
 
-def _issue_reset(u, minutes):
+def _issue_reset(u, minutes, base_url=None):
     token = secrets.token_urlsafe(32)
     u = dict(u, reset_hash=_sha(token), reset_expires=_iso(_now() + timedelta(minutes=minutes)))
     store().save(u)
     from urllib.parse import urlencode
-    link = f"{config.FRONTEND_URL}/#reset?{urlencode({'email': u['email'], 'token': token})}"
+    base = (config.FRONTEND_URL or base_url or "http://localhost:5173").rstrip("/")
+    link = f"{base}/#reset?{urlencode({'email': u['email'], 'token': token})}"
     return u, link
 
 
-def forgot_password(email):
+def forgot_password(email, base_url=None):
     """Always answers the same way, so it cannot be used to find out which emails exist."""
     u = store().get(email)
     if u and u["active"]:
-        u, link = _issue_reset(u, config.RESET_TOKEN_MINUTES)
+        u, link = _issue_reset(u, config.RESET_TOKEN_MINUTES, base_url)
         try:
             emailer.send_reset(u["email"], u.get("name"), link, config.RESET_TOKEN_MINUTES, invite=False)
         except Exception as e:
@@ -359,7 +360,7 @@ def list_users():
             "store": store().name, "email_enabled": emailer.enabled()}
 
 
-def create_user(email, name, role, password=None, send_invite=True):
+def create_user(email, name, role, password=None, send_invite=True, base_url=None):
     email = norm_email(email)
     if not EMAIL_RE.match(email):
         raise AuthError("Enter a valid email address.")
@@ -374,7 +375,7 @@ def create_user(email, name, role, password=None, send_invite=True):
     store().save(u)
     out = {"user": public(u)}
     if not password:
-        u, link = _issue_reset(u, INVITE_DAYS * 24 * 60)
+        u, link = _issue_reset(u, INVITE_DAYS * 24 * 60, base_url)
         out["link"] = link
         out["emailed"] = False
         if send_invite and emailer.enabled():
@@ -405,12 +406,12 @@ def update_user(email, actor_email, name=None, role=None, active=None):
     return {"user": public(u)}
 
 
-def admin_reset_link(email, send_email=False):
+def admin_reset_link(email, send_email=False, base_url=None):
     u = store().get(email)
     if not u:
         raise AuthError("No such user.", 404)
     minutes = 24 * 60
-    u, link = _issue_reset(u, minutes)
+    u, link = _issue_reset(u, minutes, base_url)
     out = {"link": link, "expires_hours": 24, "emailed": False}
     if send_email and emailer.enabled():
         try:

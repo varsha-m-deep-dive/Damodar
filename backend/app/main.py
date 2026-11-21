@@ -54,6 +54,18 @@ async def _body(request: Request) -> dict:
         return {}
 
 
+def _own_url(request: Request) -> str:
+    """This server's public address (DigitalOcean passes the original scheme in x-forwarded-proto)."""
+    proto = request.headers.get("x-forwarded-proto", request.url.scheme).split(",")[0].strip()
+    return f"{proto}://{request.headers.get('host', request.url.netloc)}"
+
+
+def _admin_base(request: Request) -> str:
+    """Where the signed-in admin is using the dashboard (e.g. the Vercel site), for links they copy."""
+    origin = request.headers.get("origin", "").rstrip("/")
+    return origin if origin.startswith(("https://", "http://")) else _own_url(request)
+
+
 async def _run(fn, *args, **kw):
     try:
         return JSONResponse(await run_in_threadpool(fn, *args, **kw))
@@ -85,7 +97,8 @@ async def login(request: Request):
 @app.post("/api/auth/forgot")
 async def forgot(request: Request):
     b = await _body(request)
-    return await _run(auth.forgot_password, b.get("email"))
+    # never trust the Origin header here: anyone can call this, and the link carries a reset token
+    return await _run(auth.forgot_password, b.get("email"), base_url=_own_url(request))
 
 
 @app.post("/api/auth/reset")
@@ -115,7 +128,7 @@ async def users(request: Request):
 async def create_user(request: Request):
     b = await _body(request)
     return await _run(auth.create_user, b.get("email"), b.get("name"), b.get("role", "viewer"),
-                      b.get("password") or None, bool(b.get("send_invite", True)))
+                      b.get("password") or None, bool(b.get("send_invite", True)), base_url=_admin_base(request))
 
 
 @app.post("/api/admin/users/update")
@@ -128,7 +141,7 @@ async def update_user(request: Request):
 @app.post("/api/admin/users/reset-link")
 async def reset_link(request: Request):
     b = await _body(request)
-    return await _run(auth.admin_reset_link, b.get("email"), bool(b.get("send_email")))
+    return await _run(auth.admin_reset_link, b.get("email"), bool(b.get("send_email")), base_url=_admin_base(request))
 
 
 # ------------------------------------------------------------------ admin: Google Sheets export
