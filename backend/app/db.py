@@ -1,7 +1,9 @@
 """Database access: one short-lived connection per query (Neon's pooler handles
 pooling), results returned as pandas DataFrames, with a small in-process TTL cache."""
+import gc
 import threading
 import time
+from decimal import Decimal
 
 import pandas as pd
 
@@ -30,6 +32,21 @@ def _connect():
 _db_slots = threading.BoundedSemaphore(max(1, config.DB_MAX_CONCURRENT))
 
 
+FETCH_CHUNK = 20000
+
+
+def _compact_column(values, shared):
+    """Memory saver for one column: repeated strings (customer, ledger, route names...) share
+    one object instead of one copy per row, and Decimal amounts become floats. 5 years of
+    rows otherwise need several times more RAM than the 1 GB container has."""
+    first = next((v for v in values if v is not None), None)
+    if isinstance(first, Decimal):
+        return [float(v) if v is not None else None for v in values]
+    if isinstance(first, str):
+        return [shared.setdefault(v, v) if isinstance(v, str) else v for v in values]
+    return list(values)
+
+
 def _query_once(sql, params):
     with _connect() as conn, conn.cursor() as cur:
         if config.PG_SCHEMA and config.PG_SCHEMA != "public":
@@ -38,8 +55,17 @@ def _query_once(sql, params):
             cur.execute(psql.SQL("SET LOCAL search_path TO {}").format(psql.Identifier(config.PG_SCHEMA)))
         cur.execute(sql, params or {})
         cols = [d.name for d in cur.description]
-        rows = cur.fetchall()
-    return pd.DataFrame(rows, columns=cols)
+        shared = [{} for _ in cols]
+        data = [[] for _ in cols]
+        while True:  # read in chunks so raw rows never all sit in memory at once
+            rows = cur.fetchmany(FETCH_CHUNK)
+            if not rows:
+                break
+            for i, values in enumerate(zip(*rows)):
+                data[i].extend(_compact_column(values, shared[i]))
+            del rows
+    df = pd.DataFrame({c: pd.Series(d, dtype=object) for c, d in zip(cols, data)}, columns=cols)
+    return df.infer_objects()
 
 
 def query_df(sql: str, params=None) -> pd.DataFrame:
@@ -144,7 +170,7 @@ def delta_query(key: str, sql: str, params: dict, date_col: str) -> pd.DataFrame
                                 "rows_total": len(df), "seconds": round(time.time() - t0, 2),
                                 "at": time.strftime("%Y-%m-%dT%H:%M:%S"),
                                 "cutoff": None if pd.isna(cutoff) else str(cutoff.date())}
-        return df.copy()
+        return df  # callers never modify it in place (clean_frame copies first)
 
 
 def ping():
@@ -168,6 +194,7 @@ def start_warmer(loaders_list):
             for fn in loaders_list:
                 try:
                     fn()
+                    gc.collect()
                 except Exception as e:  # keep going; the error shows on the page that needs it
                     warm_status["error"] = f"{getattr(fn, '__name__', fn)}: {type(e).__name__}: {e}"
                     print(f"background load failed: {warm_status['error']}")
